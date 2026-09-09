@@ -65,9 +65,31 @@ If that file is missing, the widget auto-detects the active VPN connection and s
 
 ## Uninstall
 
+### Option A — using the uninstall script
+
+```bash
+bash uninstall.sh
+```
+
+Or from a fresh clone:
+
+```bash
+bash <(curl -sL https://raw.githubusercontent.com/maksym-shaiev/gp-vpn-omarchy/main/uninstall.sh)
+```
+
+### Option B — using omarchy plugin remove
+
 ```bash
 omarchy plugin remove gp-vpn
 ```
+
+Both options remove:
+- Plugin files from `~/.config/omarchy/plugins/gp-vpn/`
+- Pinned connection config from `~/.config/gp-vpn-omarchy/`
+- Bar layout entry from `~/.config/omarchy/shell.json`
+- Global hotkey from `~/.config/hypr/bindings.lua`
+
+**Note:** This does NOT remove `~/.config/smc-gp-vpn/config` or the VPN binaries — those belong to [smc-gp-vpn](https://github.com/maksym-shaiev/smc-gp-vpn).
 
 ## License
 
