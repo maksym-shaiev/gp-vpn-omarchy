@@ -1,0 +1,187 @@
+#!/usr/bin/env python3
+"""gp-vpn-status — status helper for the Omarchy GlobalProtect bar widget.
+
+Prints VPN status as JSON. The connection is resolved in this order:
+
+  1. ~/.config/gp-vpn-omarchy/widget.conf     (pinned via the widget's Confirm)
+  2. ~/.config/smc-gp-vpn/config              (written by smc-gp-vpn's install.sh)
+  3. Auto-detect the active VPN connection    (needsConfirm: true)
+
+Options:
+  --pin <connName>   Persist connName to widget.conf and exit.
+"""
+
+import ipaddress
+import json
+import os
+import subprocess
+import sys
+
+CONFIG_PATH = os.path.expanduser("~/.config/smc-gp-vpn/config")
+WIDGET_CONFIG_DIR = os.path.expanduser("~/.config/gp-vpn-omarchy")
+WIDGET_CONFIG_PATH = os.path.join(WIDGET_CONFIG_DIR, "widget.conf")
+
+
+def load_config(path: str) -> dict:
+    config = {}
+    try:
+        with open(path) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                config[key.strip()] = os.path.expanduser(value.strip())
+    except FileNotFoundError:
+        pass
+    return config
+
+
+def run(cmd: list[str], check: bool = False) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, capture_output=True, text=True, check=check)
+
+
+def is_tailscale_ip(addr: str, prefix: int) -> bool:
+    try:
+        iface = ipaddress.ip_interface(f"{addr}/{prefix}")
+        return iface.network.overlaps(ipaddress.ip_network("100.64.0.0/10"))
+    except ValueError:
+        return False
+
+
+def detect_active_vpn() -> str:
+    """Return the first active vpn-type connection, or '' when none."""
+    out = run(["nmcli", "-t", "-f", "NAME,TYPE", "connection", "show", "--active"]).stdout
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        name, _, type_ = line.rpartition(":")
+        if type_ == "vpn":
+            return name
+    return ""
+
+
+def pin(conn_name: str) -> None:
+    """Persist connName to the widget's own config (human confirmation)."""
+    if not conn_name:
+        print(json.dumps({"ok": False, "error": "usage: gp-vpn-status --pin <connName>"}))
+        sys.exit(1)
+    os.makedirs(WIDGET_CONFIG_DIR, exist_ok=True)
+    with open(WIDGET_CONFIG_PATH, "w") as f:
+        f.write(f"CONN_NAME={conn_name}\n")
+    os.chmod(WIDGET_CONFIG_PATH, 0o600)
+    print(json.dumps({"ok": True}))
+
+
+def main() -> None:
+    args = sys.argv[1:]
+    if args and args[0] == "--pin":
+        pin(args[1] if len(args) > 1 else "")
+        return
+
+    config = load_config(CONFIG_PATH)
+    widget_config = load_config(WIDGET_CONFIG_PATH)
+    portal = config.get("PORTAL", "")
+
+    conn_name = ""
+    needs_confirm = False
+    if widget_config.get("CONN_NAME"):
+        conn_name = widget_config["CONN_NAME"]
+    elif config.get("CONN_NAME"):
+        conn_name = config["CONN_NAME"]
+    else:
+        conn_name = detect_active_vpn()
+        needs_confirm = True
+
+    active_names = [
+        line.strip()
+        for line in run(["nmcli", "-t", "-f", "NAME", "connection", "show", "--active"]).stdout.splitlines()
+        if line.strip()
+    ]
+    connected = bool(conn_name) and conn_name in active_names
+
+    device = ""
+    ip_addr = ""
+    gateway = ""
+    dns = ""
+    since = ""
+
+    if connected:
+        links = json.loads(run(["ip", "-j", "link", "show", "type", "tun"]).stdout or "[]")
+        for link in links:
+            flags = link.get("flags", [])
+            if "UP" not in flags:
+                continue
+            dev = link.get("ifname", "")
+            if not dev:
+                continue
+
+            addrs = json.loads(run(["ip", "-j", "-4", "addr", "show", "dev", dev]).stdout or "[]")
+            if not addrs:
+                continue
+
+            for info in addrs[0].get("addr_info", []):
+                if info.get("family") != "inet":
+                    continue
+                local = info.get("local", "")
+                prefix = info.get("prefixlen")
+                if not local or prefix is None:
+                    continue
+
+                try:
+                    iface = ipaddress.ip_interface(f"{local}/{prefix}")
+                    if iface.ip.is_link_local:
+                        continue
+                    # Skip Tailscale's CGNAT range so we don't report tailscale0.
+                    if iface.network.overlaps(ipaddress.ip_network("100.64.0.0/10")):
+                        continue
+                except ValueError:
+                    pass
+
+                device = dev
+                ip_addr = f"{local}/{prefix}"
+                break
+
+            if device:
+                break
+
+        if device:
+            dev_info = run(["nmcli", "-t", "-f", "IP4.GATEWAY,IP4.DNS", "device", "show", device]).stdout
+            dns_list = []
+            for line in dev_info.splitlines():
+                if line.startswith("IP4.GATEWAY:"):
+                    g = line.split(":", 1)[1]
+                    if g and g != "0.0.0.0":
+                        gateway = g
+                elif line.startswith("IP4.DNS["):
+                    dns_list.append(line.split(":", 1)[1])
+            dns = ", ".join(dns_list)
+
+        for line in run(["nmcli", "-t", "-f", "NAME,TIMESTAMP", "connection", "show", "--active"]).stdout.splitlines():
+            if line.startswith(conn_name + ":"):
+                since_epoch = line.split(":", 1)[1]
+                if since_epoch.isdigit():
+                    since = run(["date", "-Iseconds", "-d", f"@{since_epoch}"]).stdout.strip()
+                break
+
+    print(
+        json.dumps(
+            {
+                "connected": connected,
+                "portal": portal,
+                "device": device,
+                "ip": ip_addr,
+                "gateway": gateway,
+                "dns": dns,
+                "since": since,
+                "connName": conn_name,
+                "needsConfirm": needs_confirm,
+            },
+            indent=2,
+        )
+    )
+
+
+if __name__ == "__main__":
+    main()
