@@ -107,6 +107,8 @@ def main() -> None:
     dns = ""
     since = ""
 
+    since_epoch = 0
+
     if connected:
         links = json.loads(run(["ip", "-j", "link", "show", "type", "tun"]).stdout or "[]")
         for link in links:
@@ -162,6 +164,7 @@ def main() -> None:
             if line.startswith(conn_name + ":"):
                 since_epoch = line.split(":", 1)[1]
                 if since_epoch.isdigit():
+                    since_epoch = int(since_epoch)
                     since = run(["date", "-Iseconds", "-d", f"@{since_epoch}"]).stdout.strip()
                 break
 
@@ -175,6 +178,7 @@ def main() -> None:
                 "gateway": gateway,
                 "dns": dns,
                 "since": since,
+                "sinceEpoch": since_epoch,
                 "connName": conn_name,
                 "needsConfirm": needs_confirm,
             },

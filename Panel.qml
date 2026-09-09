@@ -23,17 +23,37 @@ Panel {
   property string gateway: ""
   property string dns: ""
   property string since: ""
+  property int sinceEpoch: 0
   property string publicIp: ""
   property string country: ""
   property string city: ""
   property bool busy: false
+  property string lastError: ""
+  property string durationText: ""
+
+  property bool _wasTryingConnect: false
+  property bool ipCopied: false
+  property bool publicIpCopied: false
 
   readonly property string helperPath: Qt.resolvedUrl("gp-vpn-status").toString().replace("file://", "")
+
+  function formatDuration(ms) {
+    var sec = Math.floor(ms / 1000)
+    if (sec < 0) return ""
+    if (sec < 60) return "just now"
+    var min = Math.floor(sec / 60)
+    var h = Math.floor(min / 60)
+    var d = Math.floor(h / 24)
+    if (d > 0) return d + "d " + (h % 24) + "h"
+    if (h > 0) return h + "h " + (min % 60) + "m"
+    return min + "m"
+  }
 
   implicitWidth: button.implicitWidth
   implicitHeight: button.implicitHeight
 
   function refreshState() {
+    lastError = ""
     statusProc.running = true
   }
 
@@ -43,16 +63,11 @@ Panel {
 
   function toggleVpn() {
     busy = true
+    _wasTryingConnect = !root.connected
     toggleProc.running = true
   }
 
-  function refreshCookie() {
-    busy = true
-    refreshProc.command = ["smc-vpn-refresh", "--no-connect"]
-    refreshProc.running = true
-  }
-
-  function reconnectVpn() {
+  function authenticate() {
     busy = true
     refreshProc.command = ["smc-vpn-refresh"]
     refreshProc.running = true
@@ -77,6 +92,13 @@ Panel {
       refreshGeo()
     }
   }
+  onSinceEpochChanged: {
+    if (root.connected && root.sinceEpoch) {
+      durationText = formatDuration(Date.now() - root.sinceEpoch * 1000)
+    } else {
+      durationText = ""
+    }
+  }
 
   Process {
     id: statusProc
@@ -97,6 +119,7 @@ Panel {
           root.gateway = String(data.gateway || "")
           root.dns = String(data.dns || "")
           root.since = String(data.since || "")
+          root.sinceEpoch = Number(data.sinceEpoch || 0)
         } catch (e) {
           console.log("gp-vpn failed to parse status:", e)
         }
@@ -113,6 +136,10 @@ Panel {
     onExited: {
       busy = false
       refreshState()
+      if (_wasTryingConnect && !root.connected) {
+        lastError = "Authentication required"
+      }
+      _wasTryingConnect = false
     }
   }
 
@@ -128,11 +155,14 @@ Panel {
 
   Process {
     id: refreshProc
-    command: ["smc-vpn-refresh", "--no-connect"]
+    command: ["smc-vpn-refresh"]
     running: false
     onExited: {
       busy = false
       refreshState()
+      if (!root.connected && lastError === "") {
+        lastError = "Refresh failed"
+      }
     }
   }
 
@@ -167,10 +197,31 @@ Panel {
   }
 
   Timer {
-    interval: 3000
-    running: true
+    id: durationTimer
+    interval: 60000
+    running: root.opened && root.connected
     repeat: true
-    onTriggered: refreshState()
+    onTriggered: {
+      if (root.sinceEpoch) {
+        root.durationText = formatDuration(Date.now() - root.sinceEpoch * 1000)
+      }
+    }
+  }
+
+  Timer {
+    id: ipCopyTimer
+    interval: 1500
+    running: false
+    repeat: false
+    onTriggered: root.ipCopied = false
+  }
+
+  Timer {
+    id: publicIpCopyTimer
+    interval: 1500
+    running: false
+    repeat: false
+    onTriggered: root.publicIpCopied = false
   }
 
   BarIconButton {
@@ -227,8 +278,7 @@ Panel {
       onCloseRequested: root.close()
       onTextKey: function(t) {
         if (t === "t" || t === "T") root.toggleVpn()
-        else if (t === "r") root.refreshCookie()
-        else if (t === "R") root.reconnectVpn()
+        else if (t === "r") root.authenticate()
       }
 
       Flickable {
@@ -282,6 +332,30 @@ Panel {
                   onToggled: root.toggleVpn()
                 }
               }
+            }
+          }
+
+          RowLayout {
+            width: parent.width
+            spacing: Style.space(8)
+            visible: root.lastError !== ""
+
+            Text {
+              text: root.lastError
+              color: root.urgent
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              elide: Text.ElideRight
+              Layout.fillWidth: true
+            }
+
+            Button {
+              text: "Authenticate"
+              visible: root.lastError !== ""
+              enabled: !root.busy
+              fontFamily: root.fontFamily
+              foreground: root.foreground
+              onClicked: root.authenticate()
             }
           }
 
@@ -377,11 +451,26 @@ Panel {
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
             }
-            Text {
-              text: root.ip || "--"
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.body
+            Item {
+              Layout.fillWidth: true
+              Text {
+                id: tunnelIpText
+                text: root.ip || "--"
+                color: root.ipCopied ? root.urgent : root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+              }
+              MouseArea {
+                anchors.fill: tunnelIpText
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  if (root.ip !== "") {
+                    Clipboard.copy(root.ip)
+                    root.ipCopied = true
+                    ipCopyTimer.restart()
+                  }
+                }
+              }
             }
 
             Text {
@@ -418,16 +507,18 @@ Panel {
             }
 
             Text {
-              text: "Since"
+              text: "Duration"
               color: root.dim
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
+              visible: root.connected
             }
             Text {
-              text: root.since ? root.since.replace("T", " ").replace(/\+.*/, "") : "--"
+              text: root.durationText || "--"
               color: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
+              visible: root.connected
             }
           }
 
@@ -452,13 +543,27 @@ Panel {
               font.pixelSize: Style.font.body
               visible: root.publicIp !== ""
             }
-            Text {
-              text: root.publicIp || "--"
-              color: root.foreground
-              font.family: root.fontFamily
-              font.pixelSize: Style.font.body
-              visible: root.publicIp !== ""
+            Item {
               Layout.fillWidth: true
+              Text {
+                id: publicIpText
+                text: root.publicIp || "--"
+                color: root.publicIpCopied ? root.urgent : root.foreground
+                font.family: root.fontFamily
+                font.pixelSize: Style.font.body
+                visible: root.publicIp !== ""
+              }
+              MouseArea {
+                anchors.fill: publicIpText
+                cursorShape: Qt.PointingHandCursor
+                onClicked: {
+                  if (root.publicIp !== "") {
+                    Clipboard.copy(root.publicIp)
+                    root.publicIpCopied = true
+                    publicIpCopyTimer.restart()
+                  }
+                }
+              }
             }
 
             Text {
@@ -486,19 +591,11 @@ Panel {
             spacing: Style.space(8)
 
             Button {
-              text: "Refresh cookie"
+              text: root.connected ? "Re-authenticate" : "Authenticate"
               enabled: !root.busy
               fontFamily: root.fontFamily
               foreground: root.foreground
-              onClicked: root.refreshCookie()
-            }
-
-            Button {
-              text: "Reconnect"
-              enabled: !root.busy
-              fontFamily: root.fontFamily
-              foreground: root.foreground
-              onClicked: root.reconnectVpn()
+              onClicked: root.authenticate()
             }
           }
         }
