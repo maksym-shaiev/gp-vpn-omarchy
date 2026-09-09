@@ -135,15 +135,14 @@ info "Plugin enabled"
 # ── 6. hotkey hint ───────────────────────────────────────────────────────────
 section "Next steps"
 
-cat <<EOF
-
-${BOLD}Add a global hotkey${RESET} to open the popup anywhere:
-
-    ${GREEN}o.bind("SUPER + ALT + V", "GlobalProtect VPN", "omarchy-shell -q shell toggle gp-vpn")${RESET}
-
-Paste the line above into ~/.config/hypr/bindings.lua and run:
-
-    ${GREEN}hyprctl reload${RESET}
-
-${BOLD}Done.${RESET}
-EOF
+echo -e ""
+echo -e "${BOLD}Add a global hotkey${RESET} to open the popup anywhere:"
+echo -e ""
+echo -e "    ${GREEN}o.bind(\"SUPER + ALT + V\", \"GlobalProtect VPN\", \"omarchy-shell -q shell toggle gp-vpn\")${RESET}"
+echo -e ""
+echo -e "Paste the line above into ~/.config/hypr/bindings.lua and run:"
+echo -e ""
+echo -e "    ${GREEN}hyprctl reload${RESET}"
+echo -e ""
+echo -e "${BOLD}Done.${RESET}"
+echo -e ""

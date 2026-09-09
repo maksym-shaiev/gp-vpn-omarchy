@@ -125,12 +125,10 @@ fi
 # ── 7. done ──────────────────────────────────────────────────────────────────
 section "Uninstall complete"
 
-cat <<EOF
-
-${BOLD}The gp-vpn widget has been removed.${RESET}
-
-To reinstall later:
-
-    ${GREEN}omarchy plugin add https://github.com/maksym-shaiev/gp-vpn-omarchy.git --enable${RESET}
-
-EOF
+echo -e ""
+echo -e "${BOLD}The gp-vpn widget has been removed.${RESET}"
+echo -e ""
+echo -e "To reinstall later:"
+echo -e ""
+echo -e "    ${GREEN}omarchy plugin add https://github.com/maksym-shaiev/gp-vpn-omarchy.git --enable${RESET}"
+echo -e ""
