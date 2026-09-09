@@ -136,7 +136,7 @@ Panel {
     onExited: {
       busy = false
       refreshState()
-      if (_wasTryingConnect && !root.connected) {
+      if (_wasTryingConnect && toggleProc.exitCode !== 0) {
         lastError = "Authentication required"
       }
       _wasTryingConnect = false
@@ -160,7 +160,7 @@ Panel {
     onExited: {
       busy = false
       refreshState()
-      if (!root.connected && lastError === "") {
+      if (refreshProc.exitCode !== 0 && lastError === "") {
         lastError = "Refresh failed"
       }
     }
@@ -451,25 +451,32 @@ Panel {
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
             }
-            Item {
+            Text {
+              id: tunnelIpText
+              text: root.ip || "--"
+              color: root.ipCopied ? root.urgent : root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              elide: Text.ElideRight
               Layout.fillWidth: true
-              Text {
-                id: tunnelIpText
-                text: root.ip || "--"
-                color: root.ipCopied ? root.urgent : root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.body
-              }
+
               MouseArea {
-                anchors.fill: tunnelIpText
-                cursorShape: Qt.PointingHandCursor
+                id: tunnelIpMouse
+                anchors.fill: parent
+                enabled: root.ip !== ""
+                hoverEnabled: enabled
+                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                 onClicked: {
-                  if (root.ip !== "") {
-                    Clipboard.copy(root.ip)
-                    root.ipCopied = true
-                    ipCopyTimer.restart()
-                  }
+                  Quickshell.execDetached(["bash", "-c", "printf %s " + Util.shellQuote(root.ip) + " | wl-copy"])
+                  root.ipCopied = true
+                  ipCopyTimer.restart()
                 }
+              }
+
+              PanelToolTip {
+                visible: tunnelIpMouse.enabled && tunnelIpMouse.containsMouse
+                text: "Copy IP"
+                fontFamily: root.fontFamily
               }
             }
 
@@ -543,26 +550,33 @@ Panel {
               font.pixelSize: Style.font.body
               visible: root.publicIp !== ""
             }
-            Item {
+            Text {
+              id: publicIpText
+              text: root.publicIp || "--"
+              color: root.publicIpCopied ? root.urgent : root.foreground
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.body
+              visible: root.publicIp !== ""
+              elide: Text.ElideRight
               Layout.fillWidth: true
-              Text {
-                id: publicIpText
-                text: root.publicIp || "--"
-                color: root.publicIpCopied ? root.urgent : root.foreground
-                font.family: root.fontFamily
-                font.pixelSize: Style.font.body
-                visible: root.publicIp !== ""
-              }
+
               MouseArea {
-                anchors.fill: publicIpText
-                cursorShape: Qt.PointingHandCursor
+                id: publicIpMouse
+                anchors.fill: parent
+                enabled: root.publicIp !== ""
+                hoverEnabled: enabled
+                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
                 onClicked: {
-                  if (root.publicIp !== "") {
-                    Clipboard.copy(root.publicIp)
-                    root.publicIpCopied = true
-                    publicIpCopyTimer.restart()
-                  }
+                  Quickshell.execDetached(["bash", "-c", "printf %s " + Util.shellQuote(root.publicIp) + " | wl-copy"])
+                  root.publicIpCopied = true
+                  publicIpCopyTimer.restart()
                 }
+              }
+
+              PanelToolTip {
+                visible: publicIpMouse.enabled && publicIpMouse.containsMouse
+                text: "Copy IP"
+                fontFamily: root.fontFamily
               }
             }
 
