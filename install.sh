@@ -13,7 +13,8 @@
 #   4. Copies the plugin files to ~/.config/omarchy/plugins/gp-vpn/
 #   5. Rescans plugins and enables gp-vpn (bar placement from manifest
 #      defaultSection: "right").
-#   6. Prints the hotkey line to paste into ~/.config/hypr/bindings.lua.
+#   6. Adds the global hotkey to ~/.config/hypr/bindings.lua (idempotent).
+#   7. Prints next steps.
 #
 # Usage:
 #   bash install.sh
@@ -132,17 +133,29 @@ omarchy-shell shell rescanPlugins >/dev/null
 omarchy-plugin-enable "$PLUGIN_ID"
 info "Plugin enabled"
 
-# ── 6. hotkey hint ───────────────────────────────────────────────────────────
-section "Next steps"
+# ── 6. add hotkey binding ────────────────────────────────────────────────────
+section "Adding hotkey binding"
+
+BINDINGS_LUA="$HOME/.config/hypr/bindings.lua"
+touch "$BINDINGS_LUA"
+
+if grep -q "shell toggle gp-vpn" "$BINDINGS_LUA"; then
+    info "gp-vpn hotkey already present in bindings.lua — skipping"
+else
+    echo -e "" >> "$BINDINGS_LUA"
+    echo -e "-- Toggle GlobalProtect VPN popup by plugin id" >> "$BINDINGS_LUA"
+    echo -e 'o.bind("SUPER + ALT + V", "GlobalProtect VPN", "omarchy-shell -q shell toggle gp-vpn")' >> "$BINDINGS_LUA"
+    info "Added gp-vpn hotkey to bindings.lua"
+fi
+
+if command -v hyprctl &>/dev/null; then
+    hyprctl reload
+    info "Reloaded Hyprland"
+fi
+
+# ── 7. done ──────────────────────────────────────────────────────────────────
+section "Done"
 
 echo -e ""
-echo -e "${BOLD}Add a global hotkey${RESET} to open the popup anywhere:"
-echo -e ""
-echo -e "    ${GREEN}o.bind(\"SUPER + ALT + V\", \"GlobalProtect VPN\", \"omarchy-shell -q shell toggle gp-vpn\")${RESET}"
-echo -e ""
-echo -e "Paste the line above into ~/.config/hypr/bindings.lua and run:"
-echo -e ""
-echo -e "    ${GREEN}hyprctl reload${RESET}"
-echo -e ""
-echo -e "${BOLD}Done.${RESET}"
+echo -e "Open the popup with ${GREEN}Super + Alt + V${RESET}."
 echo -e ""

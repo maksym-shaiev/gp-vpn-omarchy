@@ -15,7 +15,7 @@ The widget is **vendor-agnostic**: it works with any GlobalProtect portal, not j
 
 | Scope | Key | Action |
 |-------|-----|--------|
-| Global | `Super + Alt + V` | Open/close popup |
+| Global | `Super + Alt + V` | Open/close popup (auto-added by `install.sh`) |
 | Popup | `t` / `T` | Toggle VPN |
 | Popup | `r` | Refresh cookie (no reconnect) |
 | Popup | `R` | Reconnect (refresh + connect) |
