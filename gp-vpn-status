@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
 """gp-vpn-status — status helper for the Omarchy GlobalProtect bar widget.
 
-Prints VPN status as JSON. The connection is resolved in this order:
+Prints VPN status as JSON. The reported endpoint ("selected") is resolved in
+this order:
 
-  1. ~/.config/gp-vpn-omarchy/widget.conf     (pinned via the widget's Confirm)
-  2. ~/.config/smc-gp-vpn/config              (written by smc-gp-vpn's install.sh)
-  3. Auto-detect the active VPN connection    (needsConfirm: true)
+  1. ~/.config/gp-vpn-omarchy/widget.conf     ENDPOINT=<id>  (widget selector)
+  2. ~/.config/gp-vpn-omarchy/widget.conf     CONN_NAME=<n> (legacy pin)
+  3. The currently active endpoint            (connected right now)
+  4. DEFAULT_ENDPOINT from ~/.config/smc-gp-vpn/config
+
+The endpoint list comes from ~/.config/smc-gp-vpn/config (ENDPOINTS /
+ENDPOINT_<ID>_* keys, written by smc-gp-vpn's install.sh). A legacy
+single-endpoint config (PORTAL/CONN_NAME) is treated as one endpoint with
+id MAIN; with no config at all the active VPN connection is auto-detected
+(needsConfirm: true).
 
 Options:
-  --pin <connName>   Persist connName to widget.conf and exit.
+  --select <id>   Persist the selected endpoint to widget.conf and exit.
+  --pin <name>    Legacy: persist a connection name to widget.conf and exit.
 """
 
 import ipaddress
@@ -41,12 +50,57 @@ def run(cmd: list[str], check: bool = False) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True, check=check)
 
 
-def is_tailscale_ip(addr: str, prefix: int) -> bool:
-    try:
-        iface = ipaddress.ip_interface(f"{addr}/{prefix}")
-        return iface.network.overlaps(ipaddress.ip_network("100.64.0.0/10"))
-    except ValueError:
-        return False
+def parse_endpoints(config: dict) -> list[dict]:
+    """Parse ENDPOINT_* entries from config; fall back to legacy single-endpoint keys.
+
+    Mirrors parse_endpoints() in smc-gp-vpn's scripts. Each endpoint is a dict:
+    {id, portal, conn_name, cache}.
+    """
+    endpoints: list[dict] = []
+    for eid in (s.strip().upper() for s in config.get("ENDPOINTS", "").split(",")):
+        if not eid or not eid.replace("_", "").isalnum():
+            continue
+        portal = config.get(f"ENDPOINT_{eid}_PORTAL", "")
+        conn = config.get(f"ENDPOINT_{eid}_CONN_NAME", "")
+        if not portal or not conn:
+            continue
+        cache = config.get(
+            f"ENDPOINT_{eid}_CACHE",
+            os.path.expanduser(f"~/.config/gpclient/smc-cookie-{eid.lower()}.json"),
+        )
+        endpoints.append({"id": eid, "portal": portal, "conn_name": conn, "cache": cache})
+
+    if endpoints:
+        return endpoints
+
+    # Legacy single-endpoint config (written by older install.sh versions).
+    portal = config.get("PORTAL", "")
+    if portal:
+        return [{
+            "id": "MAIN",
+            "portal": portal,
+            "conn_name": config.get("CONN_NAME", "SMC"),
+            "cache": config.get(
+                "CACHE", os.path.expanduser("~/.config/gpclient/smc-cookie.json")
+            ),
+        }]
+    return []
+
+
+def default_endpoint(config: dict, endpoints: list[dict]) -> dict | None:
+    want = config.get("DEFAULT_ENDPOINT", "").strip().upper()
+    for ep in endpoints:
+        if ep["id"] == want:
+            return ep
+    return endpoints[0] if endpoints else None
+
+
+def active_conn_names() -> list[str]:
+    return [
+        line.strip()
+        for line in run(["nmcli", "-t", "-f", "NAME", "connection", "show", "--active"]).stdout.splitlines()
+        if line.strip()
+    ]
 
 
 def detect_active_vpn() -> str:
@@ -62,43 +116,153 @@ def detect_active_vpn() -> str:
     return ""
 
 
+def write_widget_config(update: dict[str, str]) -> None:
+    """Upsert keys into widget.conf, preserving other lines."""
+    existing: list[str] = []
+    try:
+        with open(WIDGET_CONFIG_PATH) as f:
+            existing = [line.rstrip("\n") for line in f]
+    except FileNotFoundError:
+        pass
+
+    out: list[str] = []
+    for line in existing:
+        key = line.split("=", 1)[0].strip() if "=" in line else ""
+        if key in update:
+            continue
+        out.append(line)
+    for key, value in update.items():
+        out.append(f"{key}={value}")
+
+    os.makedirs(WIDGET_CONFIG_DIR, exist_ok=True)
+    with open(WIDGET_CONFIG_PATH, "w") as f:
+        f.write("\n".join(out) + "\n")
+    os.chmod(WIDGET_CONFIG_PATH, 0o600)
+
+
 def pin(conn_name: str) -> None:
-    """Persist connName to the widget's own config (human confirmation)."""
+    """Legacy: persist connName to the widget's own config (human confirmation)."""
     if not conn_name:
         print(json.dumps({"ok": False, "error": "usage: gp-vpn-status --pin <connName>"}))
         sys.exit(1)
-    os.makedirs(WIDGET_CONFIG_DIR, exist_ok=True)
-    with open(WIDGET_CONFIG_PATH, "w") as f:
-        f.write(f"CONN_NAME={conn_name}\n")
-    os.chmod(WIDGET_CONFIG_PATH, 0o600)
+    write_widget_config({"CONN_NAME": conn_name})
     print(json.dumps({"ok": True}))
+
+
+def select(endpoint_id: str, config: dict) -> None:
+    """Persist the selected endpoint id to the widget's own config."""
+    endpoints = parse_endpoints(config)
+    want = (endpoint_id or "").strip().upper()
+    if not want or not any(ep["id"] == want for ep in endpoints):
+        known = ", ".join(ep["id"] for ep in endpoints) or "<none configured>"
+        print(json.dumps({"ok": False, "error": f"unknown endpoint '{endpoint_id}' (configured: {known})"}))
+        sys.exit(1)
+    write_widget_config({"ENDPOINT": want})
+    print(json.dumps({"ok": True}))
+
+
+def probe_tunnel() -> tuple[str, str, str, str]:
+    """Return (device, ip, gateway, dns) for the first usable tun interface."""
+    device = ""
+    ip_addr = ""
+    gateway = ""
+    dns = ""
+
+    links = json.loads(run(["ip", "-j", "link", "show", "type", "tun"]).stdout or "[]")
+    for link in links:
+        flags = link.get("flags", [])
+        if "UP" not in flags:
+            continue
+        dev = link.get("ifname", "")
+        if not dev:
+            continue
+
+        addrs = json.loads(run(["ip", "-j", "-4", "addr", "show", "dev", dev]).stdout or "[]")
+        if not addrs:
+            continue
+
+        for info in addrs[0].get("addr_info", []):
+            if info.get("family") != "inet":
+                continue
+            local = info.get("local", "")
+            prefix = info.get("prefixlen")
+            if not local or prefix is None:
+                continue
+
+            try:
+                iface = ipaddress.ip_interface(f"{local}/{prefix}")
+                if iface.ip.is_link_local:
+                    continue
+                # Skip Tailscale's CGNAT range so we don't report tailscale0.
+                if iface.network.overlaps(ipaddress.ip_network("100.64.0.0/10")):
+                    continue
+            except ValueError:
+                pass
+
+            device = dev
+            ip_addr = f"{local}/{prefix}"
+            break
+
+        if device:
+            break
+
+    if device:
+        dev_info = run(["nmcli", "-t", "-f", "IP4.GATEWAY,IP4.DNS", "device", "show", device]).stdout
+        dns_list = []
+        for line in dev_info.splitlines():
+            if line.startswith("IP4.GATEWAY:"):
+                g = line.split(":", 1)[1]
+                if g and g != "0.0.0.0":
+                    gateway = g
+            elif line.startswith("IP4.DNS["):
+                dns_list.append(line.split(":", 1)[1])
+        dns = ", ".join(dns_list)
+
+    return device, ip_addr, gateway, dns
 
 
 def main() -> None:
     args = sys.argv[1:]
+    config = load_config(CONFIG_PATH)
+
     if args and args[0] == "--pin":
         pin(args[1] if len(args) > 1 else "")
         return
+    if args and args[0] == "--select":
+        select(args[1] if len(args) > 1 else "", config)
+        return
 
-    config = load_config(CONFIG_PATH)
     widget_config = load_config(WIDGET_CONFIG_PATH)
-    portal = config.get("PORTAL", "")
+    active_names = active_conn_names()
+    endpoints = parse_endpoints(config)
 
-    conn_name = ""
+    for ep in endpoints:
+        ep["connected"] = ep["conn_name"] in active_names
+
+    # ── resolve the selected endpoint ────────────────────────────────────────
     needs_confirm = False
-    if widget_config.get("CONN_NAME"):
-        conn_name = widget_config["CONN_NAME"]
-    elif config.get("CONN_NAME"):
-        conn_name = config["CONN_NAME"]
-    else:
-        conn_name = detect_active_vpn()
-        needs_confirm = True
+    selected: dict | None = None
 
-    active_names = [
-        line.strip()
-        for line in run(["nmcli", "-t", "-f", "NAME", "connection", "show", "--active"]).stdout.splitlines()
-        if line.strip()
-    ]
+    want_id = widget_config.get("ENDPOINT", "").strip().upper()
+    if want_id:
+        selected = next((ep for ep in endpoints if ep["id"] == want_id), None)
+
+    if selected is None and widget_config.get("CONN_NAME"):
+        legacy_name = widget_config["CONN_NAME"]
+        selected = next((ep for ep in endpoints if ep["conn_name"] == legacy_name), None)
+
+    if selected is None and endpoints:
+        selected = next((ep for ep in endpoints if ep["connected"]), None)
+    if selected is None:
+        selected = default_endpoint(config, endpoints)
+
+    if selected is None:
+        # No smc-gp-vpn config at all — legacy auto-detect behaviour.
+        conn_name = detect_active_vpn()
+        needs_confirm = bool(conn_name)
+        selected = {"id": "MAIN", "portal": "", "conn_name": conn_name, "cache": ""}
+
+    conn_name = selected["conn_name"]
     connected = bool(conn_name) and conn_name in active_names
 
     device = ""
@@ -106,59 +270,10 @@ def main() -> None:
     gateway = ""
     dns = ""
     since = ""
-
     since_epoch = 0
 
     if connected:
-        links = json.loads(run(["ip", "-j", "link", "show", "type", "tun"]).stdout or "[]")
-        for link in links:
-            flags = link.get("flags", [])
-            if "UP" not in flags:
-                continue
-            dev = link.get("ifname", "")
-            if not dev:
-                continue
-
-            addrs = json.loads(run(["ip", "-j", "-4", "addr", "show", "dev", dev]).stdout or "[]")
-            if not addrs:
-                continue
-
-            for info in addrs[0].get("addr_info", []):
-                if info.get("family") != "inet":
-                    continue
-                local = info.get("local", "")
-                prefix = info.get("prefixlen")
-                if not local or prefix is None:
-                    continue
-
-                try:
-                    iface = ipaddress.ip_interface(f"{local}/{prefix}")
-                    if iface.ip.is_link_local:
-                        continue
-                    # Skip Tailscale's CGNAT range so we don't report tailscale0.
-                    if iface.network.overlaps(ipaddress.ip_network("100.64.0.0/10")):
-                        continue
-                except ValueError:
-                    pass
-
-                device = dev
-                ip_addr = f"{local}/{prefix}"
-                break
-
-            if device:
-                break
-
-        if device:
-            dev_info = run(["nmcli", "-t", "-f", "IP4.GATEWAY,IP4.DNS", "device", "show", device]).stdout
-            dns_list = []
-            for line in dev_info.splitlines():
-                if line.startswith("IP4.GATEWAY:"):
-                    g = line.split(":", 1)[1]
-                    if g and g != "0.0.0.0":
-                        gateway = g
-                elif line.startswith("IP4.DNS["):
-                    dns_list.append(line.split(":", 1)[1])
-            dns = ", ".join(dns_list)
+        device, ip_addr, gateway, dns = probe_tunnel()
 
         for line in run(["nmcli", "-t", "-f", "NAME,TIMESTAMP", "connection", "show", "--active"]).stdout.splitlines():
             if line.startswith(conn_name + ":"):
@@ -168,11 +283,13 @@ def main() -> None:
                     since = run(["date", "-Iseconds", "-d", f"@{since_epoch}"]).stdout.strip()
                 break
 
+    default_ep = default_endpoint(config, endpoints) if endpoints else selected
+
     print(
         json.dumps(
             {
                 "connected": connected,
-                "portal": portal,
+                "portal": selected["portal"],
                 "device": device,
                 "ip": ip_addr,
                 "gateway": gateway,
@@ -181,6 +298,17 @@ def main() -> None:
                 "sinceEpoch": since_epoch,
                 "connName": conn_name,
                 "needsConfirm": needs_confirm,
+                "endpoint": selected["id"],
+                "defaultEndpoint": default_ep["id"] if default_ep else "",
+                "endpoints": [
+                    {
+                        "id": ep["id"],
+                        "portal": ep["portal"],
+                        "connName": ep["conn_name"],
+                        "connected": ep["connected"],
+                    }
+                    for ep in endpoints
+                ],
             },
             indent=2,
         )

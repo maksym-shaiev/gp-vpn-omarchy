@@ -70,7 +70,7 @@ if [[ -r "$SMC_CONFIG_FILE" ]]; then
     info "Connection: ${SMC_CONN:-<not set>}"
     info "Browser:   ${SMC_BROWSER:-<not set>}"
 else
-    prompt PORTAL    "Portal gateway (e.g. us-access.stagwellglobal.com)" ""
+    prompt PORTAL    "Portal gateway (e.g. uk-access.stagwellglobal.com)" ""
     if [[ -z "$PORTAL" ]]; then
         die "Portal is required."
     fi

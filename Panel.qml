@@ -31,6 +31,12 @@ Panel {
   property string lastError: ""
   property string durationText: ""
 
+  // Multi-endpoint support (populated by gp-vpn-status >= v2; empty for
+  // legacy single-endpoint setups, which keep the old behaviour).
+  property var endpoints: []             // [{id, portal, connName, connected}]
+  property string endpointId: ""         // selected endpoint id
+  readonly property bool hasEndpoints: root.endpoints.length > 0
+
   property bool _wasTryingConnect: false
   property bool ipCopied: false
   property bool publicIpCopied: false
@@ -69,13 +75,61 @@ Panel {
 
   function authenticate() {
     busy = true
-    refreshProc.command = ["smc-vpn-refresh"]
+    // Pass --endpoint only when the helper reported endpoints (i.e. the
+    // installed smc-vpn-refresh supports it — older versions would reject it).
+    refreshProc.command = root.hasEndpoints && root.endpointId !== ""
+      ? ["smc-vpn-refresh", "--endpoint", root.endpointId]
+      : ["smc-vpn-refresh"]
     refreshProc.running = true
   }
 
   function pinDetected() {
     busy = true
     pinProc.running = true
+  }
+
+  function endpointById(id) {
+    for (var i = 0; i < root.endpoints.length; i++) {
+      if (root.endpoints[i].id === id) return root.endpoints[i]
+    }
+    return null
+  }
+
+  function selectEndpoint(id) {
+    if (root.busy || !root.hasEndpoints || id === root.endpointId) return
+    var target = root.endpointById(id)
+    if (!target) return
+
+    // Another endpoint is currently connected → switch tunnels: down, then up.
+    var activeEp = null
+    for (var i = 0; i < root.endpoints.length; i++) {
+      var ep = root.endpoints[i]
+      if (ep.connected && ep.id !== id) activeEp = ep
+    }
+
+    busy = true
+    if (activeEp) {
+      switchProc.connUp = target.connName
+      switchProc.command = [
+        "bash", "-c",
+        "nmcli connection down '" + activeEp.connName + "' >/dev/null 2>&1; " +
+        "nmcli connection up '" + target.connName + "'"
+      ]
+      switchProc.running = true
+    } else {
+      // Nothing connected — selecting only changes which endpoint is used next.
+      selectProc.targetId = id
+      selectProc.running = true
+    }
+  }
+
+  function cycleEndpoint() {
+    if (!root.hasEndpoints || root.endpoints.length < 2) return
+    var idx = 0
+    for (var i = 0; i < root.endpoints.length; i++) {
+      if (root.endpoints[i].id === root.endpointId) idx = i
+    }
+    selectEndpoint(root.endpoints[(idx + 1) % root.endpoints.length].id)
   }
 
   Component.onCompleted: refreshState()
@@ -120,6 +174,8 @@ Panel {
           root.dns = String(data.dns || "")
           root.since = String(data.since || "")
           root.sinceEpoch = Number(data.sinceEpoch || 0)
+          root.endpoints = Array.isArray(data.endpoints) ? data.endpoints : []
+          root.endpointId = String(data.endpoint || "")
         } catch (e) {
           console.log("gp-vpn failed to parse status:", e)
         }
@@ -150,6 +206,32 @@ Panel {
     onExited: {
       busy = false
       refreshState()
+    }
+  }
+
+  Process {
+    // Persist the endpoint selection (no tunnel change).
+    id: selectProc
+    property string targetId: ""
+    command: root.hasEndpoints ? [root.helperPath, "--select", selectProc.targetId] : []
+    running: false
+    onExited: {
+      busy = false
+      if (selectProc.exitCode !== 0) lastError = "Failed to select endpoint"
+      refreshState()
+    }
+  }
+
+  Process {
+    // Switch tunnels: bring the active endpoint down, then the selected one up.
+    id: switchProc
+    property string connUp: ""
+    running: false
+    onExited: {
+      busy = false
+      if (switchProc.exitCode !== 0) lastError = "Endpoint switch failed"
+      refreshState()
+      if (opened) geoDelayTimer.restart()
     }
   }
 
@@ -279,6 +361,7 @@ Panel {
       onTextKey: function(t) {
         if (t === "t" || t === "T") root.toggleVpn()
         else if (t === "r") root.authenticate()
+        else if (t === "e" || t === "E") root.cycleEndpoint()
       }
 
       Flickable {
@@ -300,7 +383,8 @@ Panel {
           PanelHero {
             width: parent.width
             title: root.connName + " VPN"
-            meta: root.connected ? "Connected" : "Disconnected"
+            meta: (root.endpointId !== "" ? root.endpointId + " · " : "")
+                  + (root.connected ? "Connected" : "Disconnected")
             detail: root.device || ""
             foreground: root.foreground
             fontFamily: root.fontFamily
@@ -331,6 +415,28 @@ Panel {
                   foreground: root.foreground
                   onToggled: root.toggleVpn()
                 }
+              }
+            }
+          }
+
+          RowLayout {
+            width: parent.width
+            spacing: Style.space(8)
+            visible: root.endpoints.length > 1
+
+            Repeater {
+              model: root.endpoints
+
+              delegate: Button {
+                required property var modelData
+                readonly property bool isSelected: root.endpointId === modelData.id
+                text: (isSelected ? "\uf192 " : "\uf10c ")
+                      + modelData.id
+                      + (modelData.connected ? " \uf023" : "")
+                enabled: !root.busy
+                fontFamily: root.fontFamily
+                foreground: isSelected ? root.foreground : root.dim
+                onClicked: root.selectEndpoint(modelData.id)
               }
             }
           }
