@@ -108,19 +108,18 @@ Panel {
     }
 
     busy = true
+    selectProc.targetId = id
+    selectProc.thenSwitch = activeEp !== null
     if (activeEp) {
-      switchProc.connUp = target.connName
+      // Build the switch command now; switchProc is started by selectProc
+      // once the selection has been persisted.
       switchProc.command = [
         "bash", "-c",
         "nmcli connection down '" + activeEp.connName + "' >/dev/null 2>&1; " +
         "nmcli connection up '" + target.connName + "'"
       ]
-      switchProc.running = true
-    } else {
-      // Nothing connected — selecting only changes which endpoint is used next.
-      selectProc.targetId = id
-      selectProc.running = true
     }
+    selectProc.running = true
   }
 
   function cycleEndpoint() {
@@ -210,22 +209,26 @@ Panel {
   }
 
   Process {
-    // Persist the endpoint selection (no tunnel change).
+    // Persist the endpoint selection; optionally chain into a tunnel switch.
     id: selectProc
     property string targetId: ""
+    property bool thenSwitch: false
     command: root.hasEndpoints ? [root.helperPath, "--select", selectProc.targetId] : []
     running: false
     onExited: {
-      busy = false
-      if (selectProc.exitCode !== 0) lastError = "Failed to select endpoint"
-      refreshState()
+      if (selectProc.thenSwitch) {
+        selectProc.thenSwitch = false
+        switchProc.running = true   // command was built by selectEndpoint()
+      } else {
+        busy = false
+        refreshState()
+      }
     }
   }
 
   Process {
     // Switch tunnels: bring the active endpoint down, then the selected one up.
     id: switchProc
-    property string connUp: ""
     running: false
     onExited: {
       busy = false

@@ -4,9 +4,12 @@
 Prints VPN status as JSON. The reported endpoint ("selected") is resolved in
 this order:
 
-  1. ~/.config/gp-vpn-omarchy/widget.conf     ENDPOINT=<id>  (widget selector)
-  2. ~/.config/gp-vpn-omarchy/widget.conf     CONN_NAME=<n> (legacy pin)
-  3. The currently active endpoint            (connected right now)
+  1. The currently ACTIVE endpoint    (a connected tunnel is the ground truth —
+                                      toggle/auth always act on the live one)
+  2. ~/.config/gp-vpn-omarchy/widget.conf     ENDPOINT=<id>  (widget selector —
+                                      decides what "connect" targets when no
+                                      tunnel is up)
+  3. ~/.config/gp-vpn-omarchy/widget.conf     CONN_NAME=<n> (legacy pin)
   4. DEFAULT_ENDPOINT from ~/.config/smc-gp-vpn/config
 
 The endpoint list comes from ~/.config/smc-gp-vpn/config (ENDPOINTS /
@@ -240,19 +243,19 @@ def main() -> None:
         ep["connected"] = ep["conn_name"] in active_names
 
     # ── resolve the selected endpoint ────────────────────────────────────────
+    # A connected tunnel is the ground truth: toggle/auth must always act on
+    # the live endpoint, even if the persisted selection says otherwise.
     needs_confirm = False
-    selected: dict | None = None
+    selected = next((ep for ep in endpoints if ep["connected"]), None)
 
     want_id = widget_config.get("ENDPOINT", "").strip().upper()
-    if want_id:
+    if selected is None and want_id:
         selected = next((ep for ep in endpoints if ep["id"] == want_id), None)
 
     if selected is None and widget_config.get("CONN_NAME"):
         legacy_name = widget_config["CONN_NAME"]
         selected = next((ep for ep in endpoints if ep["conn_name"] == legacy_name), None)
 
-    if selected is None and endpoints:
-        selected = next((ep for ep in endpoints if ep["connected"]), None)
     if selected is None:
         selected = default_endpoint(config, endpoints)
 
