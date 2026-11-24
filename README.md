@@ -6,9 +6,35 @@ Requires [smc-gp-vpn](https://github.com/maksym-shaiev/smc-gp-vpn) (or any openc
 
 The widget is **vendor-agnostic**: it works with any GlobalProtect portal, not just SMC/Stagwell.
 
+## Sign-in browser profile
+
+By default the CAS login opens in the browser's default profile. A Chrome or
+Chromium **profile** can be pinned in `~/.config/smc-gp-vpn/config`:
+
+```ini
+BROWSER=chrome
+BROWSER_PROFILE=stagwell                      # dir key, display name or account email
+#ENDPOINT_UK_BROWSER_PROFILE=stagwell         # optional per-endpoint override
+#ENDPOINT_US_BROWSER_PROFILE=stagwell
+```
+
+- Values are resolved against the browser's `Local State`: the profile
+  directory key (`stagwell`), its display name (`stagwellglobal.com`) or the
+  account email all work. An unknown name fails early with an `ERROR:` line
+  listing the available profiles.
+- The URL is handed to `~/.local/bin/smc-vpn-open-url` (installed by
+  `smc-gp-vpn/install.sh`), which opens
+  `google-chrome-stable --profile-directory=<dir> --new-window <url>` in its
+  own session and exits — cancelling the sign-in can never close your
+  browser, and the login window is untouched by anything the widget does.
+- The pending sign-in banner and notification name the profile
+  ("Complete the login in Chrome (stagwellglobal.com).").
+- Other browsers (`firefox`, …) keep the plain `--browser <name>` behaviour.
+
 ## What it shows
 
-- **Bar icon** — locked when connected, unlocked when disconnected, spinning indicator during actions.
+- **Bar icon** — locked shield when connected, open shield when disconnected. The glyph **never disappears**: while an action runs it pulses softly instead. A terminal `nmcli con up/down` is reflected live (NetworkManager monitor), as is a sign-in started from a terminal.
+- **Pending authentication** — when a sign-in needs the browser (cookie expired), the bar icon turns into a pulsing **alert shield** in the urgent color, a desktop notification says the login is waiting, and the popup shows a *Waiting for browser sign-in* banner with an elapsed timer and a **Cancel** button. During the first ~2.5 s (a valid cached cookie finishes that fast) the icon just pulses as "connecting". Cancel sends SIGTERM to `smc-vpn-refresh`, which stops gpclient, leaves the browser open and exits cleanly — no half-written NetworkManager state.
 - **Popup** — hero with toggle switch, endpoint selector (when multiple endpoints are configured), connection details (status, portal, device, tunnel IP, gateway, DNS, connected since), public IP / country / city (fetched from ipinfo.io), and Refresh cookie / Reconnect buttons.
 
 ## Endpoints
@@ -32,8 +58,8 @@ own NM profile and portal cookie, so switching does not require a re-login.
 | Global | `Super + Alt + V` | Open/close popup (auto-added by `install.sh`) |
 | Popup | `t` / `T` | Toggle VPN |
 | Popup | `e` / `E` | Cycle endpoint |
-| Popup | `r` | Refresh cookie (no reconnect) |
-| Popup | `R` | Reconnect (refresh + connect) |
+| Popup | `r` | Authenticate — refresh the gateway cookie (browser sign-in if needed) and reconnect |
+| Popup | `c` / `C` | Cancel a pending browser sign-in |
 | Popup | `Esc` | Close popup |
 
 ## Installation

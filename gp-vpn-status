@@ -21,6 +21,18 @@ id MAIN; with no config at all the active VPN connection is auto-detected
 Options:
   --select <id>   Persist the selected endpoint to widget.conf and exit.
   --pin <name>    Legacy: persist a connection name to widget.conf and exit.
+
+Output fields of note:
+  state     NM activation state of the selected connection ("activated",
+            "activating", "deactivating", …; "" when inactive). Only
+            "activated" counts as connected. The selected endpoint prefers
+            an activated tunnel, then one that is activating/deactivating.
+  refresh   A currently running smc-vpn-refresh ({pid, endpoint, step,
+            started}) read from $XDG_RUNTIME_DIR/smc-gp-vpn/refresh.json,
+            or null. step "auth" means the browser sign-in phase; later
+            steps are plain reconnecting.
+  refreshLast  How the last smc-vpn-refresh ended ({pid, endpoint, exit}),
+            or null. exit: 0 ok, 130 cancelled, 1 failed.
 """
 
 import ipaddress
@@ -28,10 +40,17 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 CONFIG_PATH = os.path.expanduser("~/.config/smc-gp-vpn/config")
 WIDGET_CONFIG_DIR = os.path.expanduser("~/.config/gp-vpn-omarchy")
 WIDGET_CONFIG_PATH = os.path.join(WIDGET_CONFIG_DIR, "widget.conf")
+REFRESH_STATE_DIR = os.path.join(
+    os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"),
+    "smc-gp-vpn",
+)
+STATE_PATH = os.path.join(REFRESH_STATE_DIR, "refresh.json")
+LAST_PATH = os.path.join(REFRESH_STATE_DIR, "refresh-last.json")
 
 
 def load_config(path: str) -> dict:
@@ -98,12 +117,91 @@ def default_endpoint(config: dict, endpoints: list[dict]) -> dict | None:
     return endpoints[0] if endpoints else None
 
 
-def active_conn_names() -> list[str]:
-    return [
-        line.strip()
-        for line in run(["nmcli", "-t", "-f", "NAME", "connection", "show", "--active"]).stdout.splitlines()
-        if line.strip()
-    ]
+def active_conns() -> dict[str, str]:
+    """Active connections as {name: state}.
+
+    State is NM's activation state as reported by `nmcli connection show
+    --active` (lowercase): "activated", "activating", "deactivating", …
+    A connection being listed as active does NOT mean the tunnel is up yet —
+    `nmcli con up` only removes it from the active list on failure.
+    """
+    states: dict[str, str] = {}
+    out = run(["nmcli", "-t", "-f", "NAME,TYPE,STATE", "connection", "show", "--active"]).stdout
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        rest, _, state = line.rpartition(":")
+        name, _, _type = rest.rpartition(":")
+        if name:
+            states[name] = state.strip().lower()
+    return states
+
+
+def refresh_running() -> dict | None:
+    """Currently running smc-vpn-refresh, if its pid is still alive.
+
+    The script writes $XDG_RUNTIME_DIR/smc-gp-vpn/refresh.json
+    ({pid, endpoint, connName, step, started, browserLabel}) and removes it
+    on exit. A file whose pid is gone (crash) is ignored, not deleted — the
+    helper stays read-only. `step` tells the widget which phase is real:
+    only "auth" is the browser sign-in; later steps are plain reconnecting.
+    `browserLabel` (e.g. "Chrome (stagwellglobal.com)") names the sign-in
+    browser for the widget's banner and notification.
+    """
+    try:
+        with open(STATE_PATH) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+
+    pid = data.get("pid", 0)
+    if not isinstance(pid, int) or pid <= 0:
+        return None
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return None  # stale file from a crashed run
+    except PermissionError:
+        pass  # pid exists (owned by someone else) — treat as alive
+    started = data.get("started", 0)
+    if isinstance(started, int) and started > 0 and time.time() - started > 900:
+        return None  # absurdly old — treat as stale
+    return {
+        "pid": pid,
+        "endpoint": str(data.get("endpoint", "")),
+        "connName": str(data.get("connName", "")),
+        "step": str(data.get("step", "")),
+        "started": started,
+        "browserLabel": str(data.get("browserLabel", "")),
+    }
+
+
+def refresh_last() -> dict | None:
+    """How the most recent smc-vpn-refresh ended: {pid, endpoint, exit, error}.
+
+    Written by the script itself just before its state file is removed.
+    exit codes: 0 ok, 130 cancelled, 1 failed (then `error` carries the
+    script's ERROR: text). Lets the widget report the outcome of sign-ins it
+    did not start (no exit signal of its own).
+    """
+    try:
+        with open(LAST_PATH) as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("pid"), int):
+        return None
+    exit_code = data.get("exit", -1)
+    out = {
+        "pid": data["pid"],
+        "endpoint": str(data.get("endpoint", "")),
+        "exit": exit_code if isinstance(exit_code, int) else -1,
+    }
+    err = data.get("error")
+    if isinstance(err, str) and err:
+        out["error"] = err
+    return out
 
 
 def detect_active_vpn() -> str:
@@ -236,17 +334,26 @@ def main() -> None:
         return
 
     widget_config = load_config(WIDGET_CONFIG_PATH)
-    active_names = active_conn_names()
+    conn_states = active_conns()
     endpoints = parse_endpoints(config)
 
     for ep in endpoints:
-        ep["connected"] = ep["conn_name"] in active_names
+        ep["state"] = conn_states.get(ep["conn_name"], "")
+        ep["connected"] = ep["state"] == "activated"
 
     # ── resolve the selected endpoint ────────────────────────────────────────
-    # A connected tunnel is the ground truth: toggle/auth must always act on
-    # the live endpoint, even if the persisted selection says otherwise.
+    # A live or in-flight tunnel is the ground truth: toggle/auth must act on
+    # it even if the persisted selection says otherwise. An endpoint that is
+    # activating/deactivating (e.g. `nmcli con up` from a terminal) is picked
+    # too, so the widget pulses on the connection that is actually changing.
     needs_confirm = False
-    selected = next((ep for ep in endpoints if ep["connected"]), None)
+    selected = next((ep for ep in endpoints if ep["state"] == "activated"), None)
+    if selected is None:
+        # An endpoint being brought UP wins over one being torn down, so a
+        # CLI tunnel switch pulses as "connecting", not "disconnecting".
+        selected = next((ep for ep in endpoints if ep["state"] == "activating"), None)
+    if selected is None:
+        selected = next((ep for ep in endpoints if ep["state"] == "deactivating"), None)
 
     want_id = widget_config.get("ENDPOINT", "").strip().upper()
     if selected is None and want_id:
@@ -266,7 +373,8 @@ def main() -> None:
         selected = {"id": "MAIN", "portal": "", "conn_name": conn_name, "cache": ""}
 
     conn_name = selected["conn_name"]
-    connected = bool(conn_name) and conn_name in active_names
+    state = conn_states.get(conn_name, "")
+    connected = state == "activated"
 
     device = ""
     ip_addr = ""
@@ -292,6 +400,7 @@ def main() -> None:
         json.dumps(
             {
                 "connected": connected,
+                "state": state,
                 "portal": selected["portal"],
                 "device": device,
                 "ip": ip_addr,
@@ -303,11 +412,14 @@ def main() -> None:
                 "needsConfirm": needs_confirm,
                 "endpoint": selected["id"],
                 "defaultEndpoint": default_ep["id"] if default_ep else "",
+                "refresh": refresh_running(),
+                "refreshLast": refresh_last(),
                 "endpoints": [
                     {
                         "id": ep["id"],
                         "portal": ep["portal"],
                         "connName": ep["conn_name"],
+                        "state": ep["state"],
                         "connected": ep["connected"],
                     }
                     for ep in endpoints

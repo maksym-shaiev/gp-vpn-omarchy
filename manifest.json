@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "gp-vpn",
   "name": "GlobalProtect VPN",
-  "version": "1.0.0",
+  "version": "1.2.0",
   "author": "max",
   "description": "GlobalProtect (openconnect-based) VPN bar widget and panel for Omarchy",
   "kinds": [
