@@ -325,8 +325,8 @@ Panel {
         Text {
           anchors.centerIn: parent
           visible: !root.busy
-          text: root.connected ? "\uf023" : "\uf09c"
-          color: root.foreground
+          text: root.connected ? "\u{F0565}" : "\u{F099C}"
+          color: root.connected ? root.foreground : root.dim
           font.family: root.fontFamily
           font.pixelSize: Style.bar.iconFont
           textFormat: Text.PlainText
@@ -393,7 +393,7 @@ Panel {
             fontFamily: root.fontFamily
             iconComponent: Component {
               Text {
-                text: root.connected ? "\uf023" : "\uf09c"
+                text: root.connected ? "\u{F0565}" : "\u{F099C}"
                 color: root.connected ? root.foreground : root.dim
                 font.family: root.fontFamily
                 font.pixelSize: Style.font.display
@@ -435,7 +435,7 @@ Panel {
                 readonly property bool isSelected: root.endpointId === modelData.id
                 text: (isSelected ? "\uf192 " : "\uf10c ")
                       + modelData.id
-                      + (modelData.connected ? " \uf023" : "")
+                      + (modelData.connected ? " \u{F0565}" : "")
                 enabled: !root.busy
                 fontFamily: root.fontFamily
                 foreground: isSelected ? root.foreground : root.dim
