@@ -9,6 +9,8 @@ GlobalProtect (openconnect-based) VPN bar widget and popup panel for [Omarchy](h
 - **Omarchy** (Arch-based, with `omarchy-shell`).
 - **[smc-gp-vpn](https://github.com/maksym-shaiev/smc-gp-vpn)** is strongly recommended: the widget reads its endpoints from `~/.config/smc-gp-vpn/config` (which `smc-gp-vpn/install.sh` writes) and uses its `smc-vpn-refresh` for authentication.
 
+Releases are versioned together: **widget v1.2+ pairs with smc-gp-vpn v1.0+**.
+
 What works depending on what is installed:
 
 | Feature | Without smc-gp-vpn | With smc-gp-vpn |
@@ -156,5 +158,5 @@ binaries — those belong to [smc-gp-vpn](https://github.com/maksym-shaiev/smc-g
 
 ## License
 
-Internal use. No LICENSE file — see the smc-gp-vpn repo for the current
-licensing note.
+Internal use only — Stagwell Marketing Cloud community tooling. Not for
+external distribution.
