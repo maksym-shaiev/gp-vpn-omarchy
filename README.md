@@ -6,6 +6,8 @@ Requires [smc-gp-vpn](https://github.com/maksym-shaiev/smc-gp-vpn) (or any openc
 
 The widget is **vendor-agnostic**: it works with any GlobalProtect portal, not just SMC/Stagwell.
 
+![GlobalProtect VPN widget popup](docs/screenshot.png)
+
 ## Sign-in browser profile
 
 By default the CAS login opens in the browser's default profile. A Chrome or
