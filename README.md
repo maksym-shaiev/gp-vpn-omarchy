@@ -2,42 +2,34 @@
 
 GlobalProtect (openconnect-based) VPN bar widget and popup panel for [Omarchy](https://omarchy.ai).
 
-Requires [smc-gp-vpn](https://github.com/maksym-shaiev/smc-gp-vpn) (or any openconnect-based GlobalProtect portal) to be installed first — the widget reads `PORTAL`, `CONN_NAME`, and `BROWSER` from `~/.config/smc-gp-vpn/config`, which `smc-gp-vpn/install.sh` writes.
-
-The widget is **vendor-agnostic**: it works with any GlobalProtect portal, not just SMC/Stagwell.
-
 ![GlobalProtect VPN widget popup](docs/screenshot.png)
 
-## Sign-in browser profile
+## Requirements
 
-By default the CAS login opens in the browser's default profile. A Chrome or
-Chromium **profile** can be pinned in `~/.config/smc-gp-vpn/config`:
+- **Omarchy** (Arch-based, with `omarchy-shell`).
+- **[smc-gp-vpn](https://github.com/maksym-shaiev/smc-gp-vpn)** is strongly recommended: the widget reads its endpoints from `~/.config/smc-gp-vpn/config` (which `smc-gp-vpn/install.sh` writes) and uses its `smc-vpn-refresh` for authentication.
 
-```ini
-BROWSER=chrome
-BROWSER_PROFILE=stagwell                      # dir key, display name or account email
-#ENDPOINT_UK_BROWSER_PROFILE=stagwell         # optional per-endpoint override
-#ENDPOINT_US_BROWSER_PROFILE=stagwell
-```
+What works depending on what is installed:
 
-- Values are resolved against the browser's `Local State`: the profile
-  directory key (`stagwell`), its display name (`stagwellglobal.com`) or the
-  account email all work. An unknown name fails early with an `ERROR:` line
-  listing the available profiles.
-- The URL is handed to `~/.local/bin/smc-vpn-open-url` (installed by
-  `smc-gp-vpn/install.sh`), which opens
-  `google-chrome-stable --profile-directory=<dir> --new-window <url>` in its
-  own session and exits — cancelling the sign-in can never close your
-  browser, and the login window is untouched by anything the widget does.
-- The pending sign-in banner and notification name the profile
-  ("Complete the login in Chrome (stagwellglobal.com).").
-- Other browsers (`firefox`, …) keep the plain `--browser <name>` behaviour.
+| Feature | Without smc-gp-vpn | With smc-gp-vpn |
+|---|---|---|
+| Bar status, popup details, toggle | ✅ | ✅ |
+| Authenticate / Reconnect buttons, endpoint switching, cancel sign-in | ❌ | ✅ |
+
+If no `smc-gp-vpn` config exists, the widget auto-detects the active VPN
+connection and shows a **Confirm / Skip** banner in the popup. **Confirm**
+persists the connection name to `~/.config/gp-vpn-omarchy/widget.conf` so
+future runs use it.
 
 ## What it shows
 
 - **Bar icon** — locked shield when connected, open shield when disconnected. The glyph **never disappears**: while an action runs it pulses softly instead. A terminal `nmcli con up/down` is reflected live (NetworkManager monitor), as is a sign-in started from a terminal.
 - **Pending authentication** — when a sign-in needs the browser (cookie expired), the bar icon turns into a pulsing **alert shield** in the urgent color, a desktop notification says the login is waiting, and the popup shows a *Waiting for browser sign-in* banner with an elapsed timer and a **Cancel** button. During the first ~2.5 s (a valid cached cookie finishes that fast) the icon just pulses as "connecting". Cancel sends SIGTERM to `smc-vpn-refresh`, which stops gpclient, leaves the browser open and exits cleanly — no half-written NetworkManager state.
-- **Popup** — hero with toggle switch, endpoint selector (when multiple endpoints are configured), connection details (status, portal, device, tunnel IP, gateway, DNS, connected since), public IP / country / city (fetched from ipinfo.io), and Refresh cookie / Reconnect buttons.
+- **Popup** — hero with toggle switch, endpoint selector (when multiple endpoints are configured), connection details (status, portal, device, tunnel IP, gateway, DNS, connected since), public IP / country / city, and Refresh cookie / Reconnect buttons.
+
+> **Privacy note:** the popup's *Public address* section is fetched from
+> `ipinfo.io` (a third-party service) when the popup opens. It only runs while
+> the popup is open.
 
 ## Endpoints
 
@@ -46,29 +38,42 @@ When `~/.config/smc-gp-vpn/config` defines multiple endpoints (`ENDPOINTS` /
 shows an **endpoint selector**: one pill per endpoint (e.g. `UK`, `US`). The
 selected pill is filled; clicking another endpoint switches tunnels (brings
 the current connection down, brings the new one up). Each endpoint keeps its
-own NM profile and portal cookie, so switching does not require a re-login.
+own NM profile and portal cookie.
 
 - Popup hotkey `e` cycles to the next endpoint.
 - The selection is persisted to `~/.config/gp-vpn-omarchy/widget.conf`
   (`ENDPOINT=<id>`); `gp-vpn-status --select <id>` does the same from a terminal.
 - With a legacy single-endpoint config the widget behaves exactly as before.
 
+Note: endpoints configured with `ENDPOINT_<ID>_AS_GATEWAY=yes` (UK by
+default in smc-gp-vpn) have no reusable cookie — switching to or
+reconnecting them always opens the browser for a fresh sign-in.
+
 ## Hotkeys
 
 | Scope | Key | Action |
 |-------|-----|--------|
-| Global | `Super + Alt + V` | Open/close popup (auto-added by `install.sh`) |
+| Global | `Super + Alt + V` | Open/close popup (added by `install.sh`) |
 | Popup | `t` / `T` | Toggle VPN |
 | Popup | `e` / `E` | Cycle endpoint |
 | Popup | `r` | Authenticate — refresh the gateway cookie (browser sign-in if needed) and reconnect |
 | Popup | `c` / `C` | Cancel a pending browser sign-in |
 | Popup | `Esc` | Close popup |
 
+## Sign-in browser profile
+
+The browser and Chrome/Chromium **profile** used for the CAS sign-in are
+configured in `~/.config/smc-gp-vpn/config` (`BROWSER`, `BROWSER_PROFILE`,
+`ENDPOINT_<ID>_BROWSER_PROFILE`) — this belongs to smc-gp-vpn, which installs
+the `smc-vpn-open-url` launcher the sign-in flows use. See
+[Sign-in browser profile in the smc-gp-vpn README](https://github.com/maksym-shaiev/smc-gp-vpn#sign-in-browser-profile).
+
 ## Installation
 
-### Option A — from the smc-gp-vpn installer (Omarchy only)
+### Option A — from the smc-gp-vpn installer (recommended, Omarchy only)
 
-If you're on Omarchy, `smc-gp-vpn/install.sh` offers to install the widget automatically:
+If you're on Omarchy, `smc-gp-vpn/install.sh` offers to install the widget
+automatically at the end — this also adds the `Super + Alt + V` hotkey:
 
 ```bash
 git clone https://github.com/maksym-shaiev/smc-gp-vpn.git
@@ -84,17 +89,30 @@ cd gp-vpn-omarchy
 bash install.sh
 ```
 
+This also adds the `Super + Alt + V` hotkey. If no smc-gp-vpn config exists
+yet, it prompts for a portal/connection name and writes a minimal config the
+widget can read — but authentication still needs smc-gp-vpn installed.
+
 ### Option C — omarchy plugin add
 
 ```bash
 omarchy plugin add https://github.com/maksym-shaiev/gp-vpn-omarchy.git --enable
 ```
 
-## Configuration
+Installs and enables the widget only — **no hotkey** is added. To also get
+the hotkey, either re-run this repo's `install.sh` (idempotent), or add the
+line to `~/.config/hypr/bindings.lua` manually:
 
-The widget reads `CONN_NAME` and `PORTAL` from `~/.config/smc-gp-vpn/config` (written by `smc-gp-vpn/install.sh`). Multi-endpoint configs (`ENDPOINTS` / `ENDPOINT_<ID>_*`) are supported — see [Endpoints](#endpoints).
+```lua
+o.bind("SUPER + ALT + V", "GlobalProtect VPN", "omarchy-shell -q shell toggle gp-vpn")
+```
 
-If that file is missing, the widget auto-detects the active VPN connection and shows a **Confirm / Skip** banner in the popup. **Confirm** persists the connection name to `~/.config/gp-vpn-omarchy/widget.conf` so future runs use it.
+## Dependencies
+
+The plugin itself needs only Omarchy. These commands are used at runtime:
+`nmcli`, `ip`, `curl` (public-IP lookup), `wl-copy` (copy buttons), and — for
+the full feature set — `smc-vpn-refresh` from smc-gp-vpn. The uninstall
+script additionally needs `jq`.
 
 ## Files installed
 
@@ -103,12 +121,12 @@ If that file is missing, the widget auto-detects the active VPN connection and s
 | `~/.config/omarchy/plugins/gp-vpn/manifest.json` | Plugin manifest |
 | `~/.config/omarchy/plugins/gp-vpn/Panel.qml` | Widget QML |
 | `~/.config/omarchy/plugins/gp-vpn/gp-vpn-status` | Status helper (Python) |
-| `~/.config/smc-gp-vpn/config` | Config (created by install.sh if missing) |
-| `~/.config/gp-vpn-omarchy/widget.conf` | Pinned connection (created by Confirm) |
+| `~/.config/gp-vpn-omarchy/widget.conf` | Selected endpoint / pinned connection |
+| `~/.config/hypr/bindings.lua` | `Super + Alt + V` hotkey line (added by `install.sh`) |
 
 ## Uninstall
 
-### Option A — using the uninstall script
+### Option A — using the uninstall script (full cleanup)
 
 ```bash
 bash uninstall.sh
@@ -120,20 +138,23 @@ Or from a fresh clone:
 bash <(curl -sL https://raw.githubusercontent.com/maksym-shaiev/gp-vpn-omarchy/main/uninstall.sh)
 ```
 
-### Option B — using omarchy plugin remove
+This removes the plugin files, `~/.config/gp-vpn-omarchy/widget.conf`, the
+bar layout entry and the `Super + Alt + V` hotkey from `bindings.lua`.
+
+### Option B — omarchy plugin remove
 
 ```bash
 omarchy plugin remove gp-vpn
 ```
 
-Both options remove:
-- Plugin files from `~/.config/omarchy/plugins/gp-vpn/`
-- Pinned connection config from `~/.config/gp-vpn-omarchy/`
-- Bar layout entry from `~/.config/omarchy/shell.json`
-- Global hotkey from `~/.config/hypr/bindings.lua`
+This unloads and deletes the plugin files, but **leaves behind** the
+`bindings.lua` hotkey line and `~/.config/gp-vpn-omarchy/widget.conf` — remove
+those manually or run the uninstall script above for a full cleanup.
 
-**Note:** This does NOT remove `~/.config/smc-gp-vpn/config` or the VPN binaries — those belong to [smc-gp-vpn](https://github.com/maksym-shaiev/smc-gp-vpn).
+**Note:** Neither option touches `~/.config/smc-gp-vpn/config` or the VPN
+binaries — those belong to [smc-gp-vpn](https://github.com/maksym-shaiev/smc-gp-vpn).
 
 ## License
 
-Same as [smc-gp-vpn](https://github.com/maksym-shaiev/smc-gp-vpn) — no LICENSE file.
+Internal use. No LICENSE file — see the smc-gp-vpn repo for the current
+licensing note.

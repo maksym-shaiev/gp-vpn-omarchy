@@ -99,8 +99,9 @@ section "Editing bindings.lua"
 BINDINGS_LUA="$HOME/.config/hypr/bindings.lua"
 if [[ -f "$BINDINGS_LUA" ]]; then
     if grep -q "shell toggle gp-vpn" "$BINDINGS_LUA"; then
-        tmp=$(mktemp)
-        sed -i '/^-- Toggle GlobalProtect VPN popup by plugin id$/,/^o\.bind("SUPER + ALT + V".*gp-vpn")$/d' "$BINDINGS_LUA" > "$tmp" && mv "$tmp" "$BINDINGS_LUA"
+        # Delete only our comment+bind block. sed -i edits in place — never
+        # redirect it to a tmp file (that would replace the file with empty).
+        sed -i '/^-- Toggle GlobalProtect VPN popup by plugin id$/,/^o\.bind("SUPER + ALT + V".*gp-vpn")$/d' "$BINDINGS_LUA"
         info "Removed gp-vpn hotkey from bindings.lua"
     else
         warn "gp-vpn hotkey not found in bindings.lua — skipping"
